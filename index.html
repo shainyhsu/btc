@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>極簡比特幣匯率與價格曲線</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #f7931a;
+            --bg-color: #f8f9fa;
+            --card-color: #ffffff;
+            --text-color: #333333;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 16px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            background: var(--card-color);
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+            padding: 24px;
+            width: 100%;
+            max-width: 480px;
+            box-sizing: border-box;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+        .input-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 16px;
+            border-bottom: 1px solid #eaeaea;
+            padding-bottom: 8px;
+        }
+        .currency-label {
+            width: 70px;
+            font-size: 18px;
+            font-weight: 600;
+            color: #555;
+        }
+        input {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 20px;
+            text-align: right;
+            font-weight: 500;
+            color: var(--text-color);
+            width: 100%;
+            background: transparent;
+        }
+        input::placeholder { color: #ccc; }
+        .chart-title {
+            font-size: 14px;
+            color: #666;
+            margin-top: 24px;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        .chart-container {
+            position: relative;
+            height: 180px;
+            width: 100%;
+            margin-bottom: 8px;
+        }
+        .loading {
+            text-align: center;
+            color: #999;
+            font-size: 14px;
+            padding: 20px 0;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>即時匯率換算</h2>
+    <div class="input-group">
+        <span class="currency-label">BTC</span>
+        <input type="number" id="btc-input" placeholder="1" step="any" min="0" aria-label="比特幣數量">
+    </div>
+    <div class="input-group">
+        <span class="currency-label">USD</span>
+        <input type="text" id="usd-input" readonly placeholder="計算中..." aria-label="美元金額">
+    </div>
+
+    <div class="chart-title">比特幣最近 24 小時價格曲線 (USD)</div>
+    <div class="chart-container">
+        <div id="loading-1d" class="loading">載入中...</div>
+        <canvas id="chart-1d" style="display:none;" aria-label="比特幣最近24小時價格曲線"></canvas>
+    </div>
+
+    <div class="chart-title">比特幣最近 3 天價格曲線 (USD)</div>
+    <div class="chart-container">
+        <div id="loading-3d" class="loading">載入中...</div>
+        <canvas id="chart-3d" style="display:none;" aria-label="比特幣最近3天價格曲線"></canvas>
+    </div>
+
+    <div class="chart-title">比特幣最近 7 天價格曲線 (USD)</div>
+    <div class="chart-container">
+        <div id="loading-7d" class="loading">載入中...</div>
+        <canvas id="chart-7d" style="display:none;" aria-label="比特幣最近7天價格曲線"></canvas>
+    </div>
+</div>
+<script>
+    let btcToUsd = 0;
+    const chartInstances = {};
+
+    const btcInput = document.getElementById('btc-input');
+    const usdInput = document.getElementById('usd-input');
+
+    async function initData() {
+        try {
+            // Current BTC price in USD
+            const rateResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+            if (!rateResponse.ok) throw new Error('匯率 API 回應錯誤');
+            const rateData = await rateResponse.json();
+            btcToUsd = rateData.bitcoin.usd;
+
+            btcInput.value = 1;
+            updateRates(1);
+
+            // Fetch charts in parallel
+            await Promise.all([
+                loadChart('1d', 1),
+                loadChart('3d', 3),
+                loadChart('7d', 7)
+            ]);
+        } catch (error) {
+            document.querySelectorAll('.loading').forEach(el => {
+                el.innerText = '數據載入失敗，請稍後重試。';
+            });
+            console.error('Error fetching data:', error);
+        }
+    }
+
+    async function loadChart(id, days) {
+        const loadingEl = document.getElementById(`loading-${id}`);
+        const canvas = document.getElementById(`chart-${id}`);
+        try {
+            const response = await fetch(`https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=${days}`);
+            if (!response.ok) throw new Error('歷史價格 API 回應錯誤');
+            const data = await response.json();
+            loadingEl.style.display = 'none';
+            canvas.style.display = 'block';
+            renderChart(id, data.prices, days);
+        } catch (error) {
+            loadingEl.innerText = '載入失敗';
+            console.error(`Error loading ${id} chart:`, error);
+        }
+    }
+
+    function updateRates(btcValue) {
+        if (!Number.isFinite(btcValue) || btcValue <= 0) {
+            usdInput.value = '';
+            return;
+        }
+        usdInput.value = (btcValue * btcToUsd).toLocaleString('en-US', {
+            minimumFractionDigits: 2, maximumFractionDigits: 2
+        });
+    }
+
+    btcInput.addEventListener('input', (event) => {
+        updateRates(parseFloat(event.target.value));
+    });
+
+    function formatLabel(timestamp, days) {
+        const date = new Date(timestamp);
+        if (days <= 1) {
+            return date.getHours().toString().padStart(2, '0') + ':' +
+                   date.getMinutes().toString().padStart(2, '0');
+        } else {
+            return (date.getMonth() + 1) + '/' + date.getDate() + ' ' +
+                   date.getHours().toString().padStart(2, '0') + ':00';
+        }
+    }
+
+    function renderChart(id, prices, days) {
+        const labels = prices.map(([timestamp]) => formatLabel(timestamp, days));
+        const values = prices.map(([, price]) => price);
+        const ctx = document.getElementById(`chart-${id}`).getContext('2d');
+
+        if (chartInstances[id]) chartInstances[id].destroy();
+        chartInstances[id] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'BTC/USD',
+                    data: values,
+                    borderColor: '#f7931a',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    hoverRadius: 4,
+                    fill: false,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { maxTicksLimit: 6, color: '#999', maxRotation: 0 }
+                    },
+                    y: {
+                        grid: { color: '#f0f0f0' },
+                        ticks: {
+                            color: '#999',
+                            callback: value => Number(value).toLocaleString('en-US')
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    initData();
+</script>
+</body>
+</html>
