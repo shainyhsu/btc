@@ -119,47 +119,93 @@
 <script>
     let btcToUsd = 0;
     const chartInstances = {};
+    const CACHE_TTL = 90 * 1000; // 快取 90 秒，避免重新整理一直打 API
 
     const btcInput = document.getElementById('btc-input');
     const usdInput = document.getElementById('usd-input');
 
+    // 簡單的 localStorage 快取
+    function getCache(key) {
+        try {
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            const { ts, data } = JSON.parse(raw);
+            if (Date.now() - ts > CACHE_TTL) {
+                localStorage.removeItem(key);
+                return null;
+            }
+            return data;
+        } catch {
+            return null;
+        }
+    }
+
+    function setCache(key, data) {
+        try {
+            localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
+        } catch {}
+    }
+
+    async function fetchWithCache(url, cacheKey) {
+        const cached = getCache(cacheKey);
+        if (cached) return cached;
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            if (response.status === 429) {
+                throw new Error('API 請求過於頻繁，請稍後再試');
+            }
+            throw new Error(`API 錯誤 ${response.status}`);
+        }
+        const data = await response.json();
+        setCache(cacheKey, data);
+        return data;
+    }
+
     async function initData() {
         try {
-            // Current BTC price in USD
-            const rateResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-            if (!rateResponse.ok) throw new Error('匯率 API 回應錯誤');
-            const rateData = await rateResponse.json();
+            // 取得即時匯率
+            const rateData = await fetchWithCache(
+                'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd',
+                'btc_price_usd'
+            );
             btcToUsd = rateData.bitcoin.usd;
 
             btcInput.value = 1;
             updateRates(1);
 
-            // Fetch charts in parallel
-            await Promise.all([
-                loadChart('1d', 1),
-                loadChart('3d', 3),
-                loadChart('7d', 7)
-            ]);
+            // 依序載入曲線（避免同時發太多請求被限流）
+            await loadChart('1d', 1);
+            await delay(300);
+            await loadChart('3d', 3);
+            await delay(300);
+            await loadChart('7d', 7);
+
         } catch (error) {
             document.querySelectorAll('.loading').forEach(el => {
-                el.innerText = '數據載入失敗，請稍後重試。';
+                el.innerText = error.message || '數據載入失敗，請稍後重試';
             });
             console.error('Error fetching data:', error);
         }
+    }
+
+    function delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     async function loadChart(id, days) {
         const loadingEl = document.getElementById(`loading-${id}`);
         const canvas = document.getElementById(`chart-${id}`);
         try {
-            const response = await fetch(`https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=${days}`);
-            if (!response.ok) throw new Error('歷史價格 API 回應錯誤');
-            const data = await response.json();
+            const data = await fetchWithCache(
+                `https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=${days}`,
+                `btc_chart_${days}d`
+            );
             loadingEl.style.display = 'none';
             canvas.style.display = 'block';
             renderChart(id, data.prices, days);
         } catch (error) {
-            loadingEl.innerText = '載入失敗';
+            loadingEl.innerText = error.message || '載入失敗';
             console.error(`Error loading ${id} chart:`, error);
         }
     }
